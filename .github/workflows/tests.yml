@@ -1,0 +1,77 @@
+name: Tests and Docker Publish
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run pytest locally
+      run: pytest --maxfail=1 --disable-warnings -q
+
+  docker-test:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      run: docker build -t ai-pentest-assistant .
+
+    - name: Run pytest inside container
+      run: docker run --rm ai-pentest-assistant pytest --maxfail=1 --disable-warnings -q
+
+  docker-publish:
+    runs-on: ubuntu-latest
+    needs: docker-test
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # ✅ DockerHub Login
+    - name: Log in to DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # ✅ GitHub Container Registry Login
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and Push to Both Registries
+      uses: docker/build-push-action@v6
+      with:
+        push: true
+        tags: |
+          ${{ secrets.DOCKERHUB_USERNAME }}/ai-pentest-assistant:latest
+          ghcr.io/${{ github.repository_owner }}/ai-pentest-assistant:latest
