@@ -6,14 +6,13 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
-      - ./backend/uploads:/app/uploads
-      - ./backend/clips:/app/clips
+      - ./backend/jobs:/app/jobs
 
   frontend:
     build: ./frontend
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - backend
