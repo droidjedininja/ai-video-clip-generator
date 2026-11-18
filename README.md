@@ -27,3 +27,5 @@ Returns transcript, highlights JSON, and list of clip paths.
 - Requires FFmpeg (installed in backend Dockerfile).
 - `services/whisper.py` currently sets `openai.api_key` directly — switch to env usage for production.
 - This is an MVP scaffold. Improve by adding subtitle burn-in, better highlight parsing, storage (S3/Supabase), and auth/payments.
+
+Copyright © 2026 Freddie. All rights reserved.
