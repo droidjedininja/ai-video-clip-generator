@@ -17,7 +17,7 @@ def validate_highlights(value, duration):
         if not isinstance(h, dict):
             raise InvalidHighlights('Invalid highlight')
         start, end = h.get('start'), h.get('end')
-        if any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) for t in (start, end)):
+        if any(isinstance(t, bool) or not isinstance(t, (int, float)) or (isinstance(t, float) and not math.isfinite(t)) for t in (start, end)):
             raise InvalidHighlights('Times must be finite numbers')
         if not 0 <= start < end <= duration:
             raise InvalidHighlights('Highlight lies outside the video duration')

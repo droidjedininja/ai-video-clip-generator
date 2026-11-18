@@ -160,6 +160,7 @@ def test_other_requests_remain_responsive(client, fake_processing, monkeypatch):
     {'highlights': [{'start': 2, 'end': 1, 'reason': 'x'}]},
     {'highlights': [{'start': 1, 'end': 100, 'reason': 'x'}]},
     {'highlights': [{'start': True, 'end': 2, 'reason': 'x'}]},
+    {'highlights': [{'start': 10**1000, 'end': 2, 'reason': 'x'}]},
     {'highlights': [{'start': float('nan'), 'end': 2, 'reason': 'x'}]},
     {'highlights': [{'start': 1, 'end': float('inf'), 'reason': 'x'}]},
 ])
