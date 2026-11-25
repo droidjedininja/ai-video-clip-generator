@@ -42,6 +42,7 @@ export default function Home() {
       {error && <p role="alert">{error}</p>}
       {result && <section>
         <h2>Your clips</h2>
+        <p>Save your clips: stored jobs expire automatically (24 hours by default).</p>
         <ul>{result.clips.map((path, idx) => <li key={path}>
           <video controls preload="metadata" src={`${API_URL}${path}`} style={{ maxWidth: "100%", maxHeight: 480 }} />
           <p><a href={`${API_URL}${path}`}>Download clip {idx + 1}</a></p>

@@ -34,6 +34,8 @@ Copy `.env.example` to `.env` only if you want to override defaults:
 | --- | --- | --- |
 | `WHISPER_MODEL` | `tiny` | `tiny`, `base`, or `small`; larger models may improve accuracy |
 | `WHISPER_TIMEOUT_SECONDS` | `600` | Worker wall-clock timeout, including model loading/download; 1–3600 |
+| `JOB_RETENTION_HOURS` | `24` | Expire standalone uploads and completed clips after this many hours; positive and at most 8760 |
+| `JOB_CLEANUP_INTERVAL_SECONDS` | `300` | Sweep interval; 1–86400 seconds. Cleanup also runs at startup |
 | `WHISPER_OFFLINE` | `0` | Set to `1` after the selected model is cached to prohibit model downloads |
 | `WHISPER_CACHE_DIR` | `/models` in Docker | Native model directory; default `~/.cache/video-clip-whisper`. Docker uses its `/models` volume |
 
@@ -56,6 +58,12 @@ reduce selection quality. Silent videos return an error instead of invented clip
 
 - Containers: MP4, MOV, MKV, WebM, M4V and AVI, with an audio track.
 - Maximum saved video size: 100 MiB; duration must be positive and at most one hour.
+- Total request bodies are limited to 101 MiB, including multipart overhead. Oversized
+  Content-Length values are rejected immediately. Streamed/chunked bodies are counted
+  before multipart parsing, so omitting or understating Content-Length cannot bypass
+  the cap. At most two upload/write requests are admitted per backend process.
+- Bodies are staged in bounded temporary files before parsing and replayed only after
+  passing the limit. Staging files close on rejection, disconnect, success or failure.
 - Audio is extracted to mono MP3 locally. There is no hosted transcription size cap.
 - UUID-based job directories isolate uploads and output clips; original filenames
   never become disk paths. Unsafe names and unsupported extensions are rejected.
@@ -65,8 +73,26 @@ reduce selection quality. Silent videos return an error instead of invented clip
   Local transcription runs in a subprocess with the configurable timeout above.
   A one-hour upload may exceed that budget on slower CPUs.
 - Source video and extracted audio are removed after success. Failed pipeline jobs
-  are removed; completed clips and standalone uploads persist in `backend/jobs/`
-  until you remove their job directories. Models remain in their separate cache.
+  are removed; completed clips and standalone uploads expire automatically according
+  to `JOB_RETENTION_HOURS` (24 hours by default). Models remain in their separate cache.
+
+## Automatic cleanup
+
+Retention starts when an upload or pipeline job finishes. Cleanup runs at server
+startup and every `JOB_CLEANUP_INTERVAL_SECONDS` (five minutes by default). Expired
+clip URLs return HTTP 404 even before the next sweep. Download clips you want to keep.
+
+Only UUID-named job directories under `DATA_DIR` (`backend/jobs/` in Docker's host
+mount) are eligible. Unrelated names, directory symlinks, and model caches are not
+removed. OS file locks protect uploads, processing jobs and in-flight downloads,
+including across backend processes sharing the same local filesystem. Locks release
+on process exit, so abandoned jobs can expire on a later sweep. These locks require
+a local POSIX filesystem; shared network filesystems are not supported.
+
+Existing UUID job directories are included: their last directory modification time
+is used for retention. Before deploying this version, download or move any existing
+outputs you want to retain beyond the configured period. Invalid retention settings
+fail startup instead of falling back to a deletion policy.
 
 ## API and UI
 
@@ -112,7 +138,7 @@ npm run build
 ```
 
 Automated tests mock the model and media subprocesses. They test upload boundaries,
-job isolation, downloads, cleanup, deterministic timing rules, CPU/offline settings,
+job isolation, streamed request limits, active-job retention locks, downloads, cleanup, deterministic timing rules, CPU/offline settings,
 timeouts and responsiveness without network calls or model downloads. CI also
 builds the frontend and backend Docker image. Real local inference is tested
 separately with a short synthetic speech video.
@@ -131,7 +157,8 @@ This remains a local, single-user MVP. Docker binds both ports to loopback and C
 permits the local frontend origins. There is no user authentication or per-user
 clip authorization; UUID URLs are not an authorization system. Before public
 hosting, add authentication, private user storage, ingress body limits, quotas,
-retention and durable workers. The saved-file limit applies after multipart parsing.
+and durable workers. Backend request limits and automatic retention are provided;
+also configure appropriate limits at a public ingress/reverse proxy.
 Local inference avoids API charges but still consumes electricity, CPU and storage.
 
 Copyright © 2026 Freddie. All rights reserved.
