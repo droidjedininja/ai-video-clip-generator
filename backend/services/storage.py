@@ -1,5 +1,6 @@
 """Shared upload boundary: original filenames never become storage paths."""
 import os
+import json
 import fcntl
 import math
 import time
@@ -54,6 +55,15 @@ def finish_job(directory, lease):
         os.close(lease)
 
 
+def read_job_metadata(directory):
+    try:
+        fd = os.open(directory/'job.json', os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, encoding='utf-8') as source:
+        return json.load(source)
+
+
 def cleanup_expired_jobs(now=None):
     now = time.time() if now is None else now
     cutoff = now - retention_seconds()
@@ -74,13 +84,16 @@ def cleanup_expired_jobs(now=None):
             # need a new lock; use their age from before creating that lock file.
             if had_lock and directory.stat().st_mtime > cutoff:
                 continue
+            metadata = read_job_metadata(directory)
+            if metadata is not None and (not isinstance(metadata, dict) or metadata.get('status') not in ('completed', 'failed')):
+                continue  # Queued/active jobs are retained until they reach a terminal state.
             shutil.rmtree(directory)
             removed += 1
         except BlockingIOError:
             pass  # Active processing or download in this or another process.
         except FileNotFoundError:
             pass
-        except OSError:
+        except (OSError, ValueError):
             logger.warning('Could not expire job %s', directory.name)
         finally:
             if lease is not None:
@@ -152,13 +165,16 @@ def get_clip(job_id: str, filename: str):
             raise HTTPException(404, 'Clip not found')
         if path.parent.stat().st_mtime <= time.time() - retention_seconds():
             raise HTTPException(404, 'Clip expired')
+        metadata = read_job_metadata(path.parent)
+        if metadata is not None and (not isinstance(metadata, dict) or metadata.get('status') != 'completed'):
+            raise HTTPException(404, 'Clip is not ready')
         lease = _lease(path.parent, shared=True)
         if path.parent.stat().st_mtime <= time.time() - retention_seconds():
             raise HTTPException(404, 'Clip expired')
         if path.is_symlink() or path.resolve().parent != root / job_id or not path.is_file():
             raise HTTPException(404, 'Clip not found')
         return path, lease
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         if lease is not None:
             os.close(lease)
         raise HTTPException(404, 'Clip not found') from exc
