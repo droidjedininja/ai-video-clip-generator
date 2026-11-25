@@ -1,14 +1,15 @@
-version: "3.8"
-
 services:
   backend:
     build: ./backend
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      WHISPER_MODEL: ${WHISPER_MODEL:-tiny}
+      WHISPER_TIMEOUT_SECONDS: ${WHISPER_TIMEOUT_SECONDS:-600}
+      WHISPER_OFFLINE: ${WHISPER_OFFLINE:-0}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./backend/jobs:/app/jobs
+      - whisper-models:/models
 
   frontend:
     build: ./frontend
@@ -16,3 +17,6 @@ services:
       - "127.0.0.1:3000:3000"
     depends_on:
       - backend
+
+volumes:
+  whisper-models:

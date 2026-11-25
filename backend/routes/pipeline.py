@@ -1,26 +1,22 @@
 import logging
-import os
 import shutil
 import subprocess
 from threading import BoundedSemaphore
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
-from openai import OpenAIError
-from services.whisper import transcribe_audio
-from services.gpt import detect_highlights, InvalidHighlights
+from services.whisper import transcribe_audio, LocalTranscriptionError
+from services.highlights import detect_highlights, InvalidHighlights
 from services.clipper import cut_clip, media_duration, extract_audio
 from services.storage import save_upload, get_clip
 
 router = APIRouter(prefix='/pipeline', tags=['pipeline'])
-# Synchronous handlers run in FastAPI's thread pool; bound expensive work per process.
-slots = BoundedSemaphore(2)
+# Local inference is CPU/memory intensive; allow one pipeline per backend process.
+slots = BoundedSemaphore(1)
 logger = logging.getLogger(__name__)
 
 
 @router.post('/')
 def process_video(file: UploadFile = File(...)):
-    if not os.getenv('OPENAI_API_KEY'):
-        raise HTTPException(503, 'Server is missing OPENAI_API_KEY')
     if not slots.acquire(blocking=False):
         raise HTTPException(429, 'Processing is busy. Try again shortly.')
     file_path = None
@@ -40,11 +36,13 @@ def process_video(file: UploadFile = File(...)):
             clips.append(f'/pipeline/{job_id}/clips/{name}')
         succeeded = True
         return {'status': 'success', 'job_id': job_id, 'transcript': transcript['text'],
-                'highlights': highlights, 'clips': clips}
-    except (OpenAIError, InvalidHighlights) as exc:
-        # Avoid logging request data or provider exception messages that may contain secrets.
-        logger.warning('AI processing failed: %s', type(exc).__name__)
-        raise HTTPException(502, 'AI processing failed. Please try again.') from exc
+                'highlights': highlights, 'clips': clips,
+                'highlight_method': 'rule_based', 'transcription_backend': 'faster-whisper'}
+    except LocalTranscriptionError as exc:
+        logger.warning('Local transcription failed: %s', type(exc).__name__)
+        raise HTTPException(503, 'Local transcription failed. Check the model cache, network for first download, and server configuration.') from exc
+    except InvalidHighlights as exc:
+        raise HTTPException(422, 'No usable speech highlights were found in this video.') from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(504, 'Video processing timed out') from exc
     except (subprocess.CalledProcessError, ValueError) as exc:
