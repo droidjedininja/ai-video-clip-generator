@@ -27,8 +27,6 @@ def extract_audio(input_file):
          '-ac', '1', '-ar', '16000', '-b:a', '48k', str(output)],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120,
     )
-    if output.stat().st_size > 24 * 1024 * 1024:
-        raise ValueError('Extracted audio exceeds transcription size limit')
     return output
 
 

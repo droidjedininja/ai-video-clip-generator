@@ -1,5 +1,4 @@
 import io
-import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,13 +11,13 @@ from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 from main import app
 from routes import pipeline
-from services import storage, whisper, gpt, clipper
+from services import storage, whisper, highlights, clipper
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, 'DATA_DIR', tmp_path/'jobs')
-    monkeypatch.setenv('OPENAI_API_KEY', 'test-placeholder')
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
     with TestClient(app) as client:
         yield client
 
@@ -104,23 +103,25 @@ def test_download_rejects_invalid_ids_names_and_symlinks(client, tmp_path):
     assert client.get(f'/pipeline/{job}/clips/clip_2.mp4').status_code == 404
 
 
-def test_missing_server_key_is_clear(client, monkeypatch):
-    monkeypatch.delenv('OPENAI_API_KEY')
-    assert client.post('/pipeline/', files={'file': ('clip.mp4', b'x')}).status_code == 503
+def test_pipeline_needs_no_api_key(client, fake_processing):
+    response = client.post('/pipeline/', files={'file': ('clip.mp4', b'x')})
+    assert response.status_code == 200
+    assert response.json()['highlight_method'] == 'rule_based'
+    assert response.json()['transcription_backend'] == 'faster-whisper'
 
 
 def test_capacity_returns_busy(client):
     assert pipeline.slots.acquire(False)
-    assert pipeline.slots.acquire(False)
+    assert not pipeline.slots.acquire(False)
     try:
         assert client.post('/pipeline/', files={'file': ('clip.mp4', b'x')}).status_code == 429
     finally:
         pipeline.slots.release()
-        pipeline.slots.release()
 
 
 @pytest.mark.parametrize('failure,status', [
-    (gpt.InvalidHighlights('provider output'), 502),
+    (highlights.InvalidHighlights('invalid transcript'), 422),
+    (whisper.LocalTranscriptionError('model unavailable'), 503),
     (subprocess.TimeoutExpired('ffmpeg', 180), 504),
     (subprocess.CalledProcessError(1, 'ffmpeg'), 422),
 ])
@@ -132,8 +133,7 @@ def test_failure_cleans_job_and_releases_slot(client, fake_processing, monkeypat
     assert response.status_code == status
     assert list(storage.DATA_DIR.iterdir()) == []
     assert pipeline.slots.acquire(False)
-    assert pipeline.slots.acquire(False)
-    pipeline.slots.release()
+    assert not pipeline.slots.acquire(False)
     pipeline.slots.release()
 
 
@@ -165,27 +165,8 @@ def test_other_requests_remain_responsive(client, fake_processing, monkeypatch):
     {'highlights': [{'start': 1, 'end': float('inf'), 'reason': 'x'}]},
 ])
 def test_invalid_model_schema_and_times(value):
-    with pytest.raises(gpt.InvalidHighlights):
-        gpt.validate_highlights(value, 60)
-
-
-def test_sdk_transcription_uses_timestamped_audio(tmp_path, monkeypatch):
-    path = tmp_path/'audio.mp3'
-    path.write_bytes(b'audio')
-    create = Mock(return_value=SimpleNamespace(text='speech', segments=[SimpleNamespace(start=0, end=2.5, text='speech')]))
-    client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
-    monkeypatch.setattr(whisper, 'OpenAI', Mock(return_value=client))
-    assert whisper.transcribe_audio(str(path)) == {'text': 'speech', 'segments': [{'start': 0, 'end': 2.5, 'text': 'speech'}]}
-    assert create.call_args.kwargs['timestamp_granularities'] == ['segment']
-    assert create.call_args.kwargs['response_format'] == 'verbose_json'
-
-
-def test_sdk_chat_reads_typed_content(monkeypatch):
-    content = {'highlights': [{'start': .1, 'end': 2, 'reason': 'interesting'}]}
-    create = Mock(return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(content)))]))
-    monkeypatch.setattr(gpt, 'OpenAI', Mock(return_value=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))))
-    assert gpt.detect_highlights({'text': 'hello', 'segments': []}, 60) == content['highlights']
-    assert create.call_args.kwargs['response_format'] == {'type': 'json_object'}
+    with pytest.raises(highlights.InvalidHighlights):
+        highlights.validate_highlights(value, 60)
 
 
 def test_subprocesses_are_bounded_and_inputs_restricted(monkeypatch, tmp_path):

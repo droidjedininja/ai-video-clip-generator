@@ -31,6 +31,7 @@ export default function Home() {
   return (
     <main style={{ maxWidth: 800, margin: "3rem auto", padding: "0 1rem", fontFamily: "system-ui" }}>
       <h1>AI Video Clip Generator</h1>
+      <p>Local Whisper transcription and rule-based highlights. No API key or credits required.</p>
       <p>Choose a video up to 100 MiB and one hour long. Processing can take several minutes.</p>
       <label htmlFor="video">Video file</label>{" "}
       <input id="video" type="file" accept=".mp4,.mov,.mkv,.webm,.m4v,.avi" disabled={loading}
