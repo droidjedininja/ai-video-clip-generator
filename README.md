@@ -8,6 +8,17 @@ selection uses deterministic rules, and FFmpeg creates the clips.
 Your audio stays on the machine running the backend. The first run downloads a
 public Whisper model from Hugging Face; subsequent runs reuse its local cache.
 
+## Walkthrough
+
+[![Watch the local video-processing walkthrough](docs/walkthrough.gif)](docs/walkthrough.mp4)
+
+[Watch or download the walkthrough (MP4)](docs/walkthrough.mp4).
+
+This silent recording shows a real local run: upload a video, follow its job
+status, reopen the saved result, preview a generated clip, and download it.
+It uses synthetic speech and a cached `tiny` Whisper model. Waiting time is
+shortened; processing speed varies with your hardware.
+
 ## Quickstart with Docker
 
 ```bash
