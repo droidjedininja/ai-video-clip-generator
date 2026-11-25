@@ -113,4 +113,4 @@ def test_real_multipart_route_is_not_reached_for_large_declared_body(monkeypatch
             'origin':'http://localhost:3000'})
     assert response.status_code==413
     assert response.headers['access-control-allow-origin']=='http://localhost:3000'
-    assert not storage.DATA_DIR.exists()
+    assert not any(p.is_dir() for p in storage.DATA_DIR.iterdir())

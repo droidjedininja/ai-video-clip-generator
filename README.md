@@ -34,6 +34,7 @@ Copy `.env.example` to `.env` only if you want to override defaults:
 | --- | --- | --- |
 | `WHISPER_MODEL` | `tiny` | `tiny`, `base`, or `small`; larger models may improve accuracy |
 | `WHISPER_TIMEOUT_SECONDS` | `600` | Worker wall-clock timeout, including model loading/download; 1–3600 |
+| `MAX_QUEUED_JOBS` | `5` | Waiting uploads in addition to one active job; 1–20 |
 | `JOB_RETENTION_HOURS` | `24` | Expire standalone uploads and completed clips after this many hours; positive and at most 8760 |
 | `JOB_CLEANUP_INTERVAL_SECONDS` | `300` | Sweep interval; 1–86400 seconds. Cleanup also runs at startup |
 | `WHISPER_OFFLINE` | `0` | Set to `1` after the selected model is cached to prohibit model downloads |
@@ -67,18 +68,21 @@ reduce selection quality. Silent videos return an error instead of invented clip
 - Audio is extracted to mono MP3 locally. There is no hosted transcription size cap.
 - UUID-based job directories isolate uploads and output clips; original filenames
   never become disk paths. Unsafe names and unsupported extensions are rejected.
-- Busy requests receive HTTP 429. Processing runs outside the event loop, but this
-  MVP has no durable queue, progress polling, or restart recovery.
+- Uploads return a job ID after saving and queueing, without waiting for transcription
+  or rendering. One local worker processes jobs, with at most five waiting by default.
+  A full queue returns HTTP 429; upload/write concurrency limits also remain in place.
 - ffprobe, extraction and each clip render have 15, 120 and 180 second timeouts.
   Local transcription runs in a subprocess with the configurable timeout above.
   A one-hour upload may exceed that budget on slower CPUs.
-- Source video and extracted audio are removed after success. Failed pipeline jobs
-  are removed; completed clips and standalone uploads expire automatically according
-  to `JOB_RETENTION_HOURS` (24 hours by default). Models remain in their separate cache.
+- Source video and extracted audio are removed after success. Failed jobs retain
+  their status/error but remove source, audio and partial clips. Completed/failed
+  jobs and standalone uploads expire according to `JOB_RETENTION_HOURS` (24 hours
+  by default). Models remain in their separate cache.
 
 ## Automatic cleanup
 
-Retention starts when an upload or pipeline job finishes. Cleanup runs at server
+Retention starts when a standalone upload or processing job finishes. Queued and
+active jobs are excluded from expiry while waiting/processing. Cleanup runs at server
 startup and every `JOB_CLEANUP_INTERVAL_SECONDS` (five minutes by default). Expired
 clip URLs return HTTP 404 even before the next sweep. Download clips you want to keep.
 
@@ -94,22 +98,59 @@ is used for retention. Before deploying this version, download or move any exist
 outputs you want to retain beyond the configured period. Invalid retention settings
 fail startup instead of falling back to a deletion policy.
 
-## API and UI
+## Jobs, progress, and reopening the page
 
-- `POST /pipeline/`: multipart `file`; returns `status`, `job_id`, transcript,
-  highlights, relative clip URLs, `highlight_method: "rule_based"` and
-  `transcription_backend: "faster-whisper"`.
-- `GET /pipeline/{job_id}/clips/clip_1.mp4`: download a generated clip. Only expected
-  job IDs and clip filenames are accepted; source files are not served.
-- `POST /upload/`: store an isolated upload and return `job_id` without processing.
-  `/pipeline/` takes its own file upload.
+`POST /pipeline/` returns **HTTP 202** after the upload is saved and durably queued:
 
-Errors return non-2xx statuses and a `detail` message: 400 invalid upload, 413
-saved-file size limit, 415 unsupported extension, 422 invalid video/no usable speech,
-429 busy, 503 local model/configuration failure, and 504 processing timeout.
-The UI restores controls after failures and provides players and download links.
-`NEXT_PUBLIC_API_URL` overrides its default `http://localhost:8000` origin; set it
-before building or starting Next.js.
+```json
+{"job_id":"0123456789abcdef0123456789abcdef","status":"queued","status_url":"/pipeline/jobs/0123456789abcdef0123456789abcdef"}
+```
+
+Poll `GET /pipeline/jobs/{job_id}` for `status`, `progress`, `detail`, timestamps,
+`expires_at`, `error`, and `result`. Stages are `queued`, `preparing`, `transcribing`,
+`selecting`, `rendering`, `completed`, and `failed`. Progress is stage-based, not an
+ETA or a per-frame/per-word percentage; transcription can stay at 15% during model
+download and inference. Completed jobs have progress 100 and a `result` containing
+transcript, highlights, clip URLs, `highlight_method: "rule_based"` and
+`transcription_backend: "faster-whisper"`. Failed jobs retain an error code/message.
+Processing errors are stored in job status rather than returned by the upload POST.
+
+The UI polls automatically and retries transient connection failures. It saves
+the current job ID in browser localStorage, scoped to the API origin. Reloading or
+reopening restores that job. A `?job={job_id}` link can also restore it. Keep the
+page open until upload confirmation; an interrupted upload before a job ID is
+returned cannot be restored. After confirmation, the page can close while the local
+server continues processing. Job links reveal access to local results: keep them private.
+
+- `GET /pipeline/{job_id}/clips/clip_1.mp4`: download completed clips; incomplete or
+  failed jobs do not serve partial output. Full and byte-range downloads are supported.
+- `POST /upload/`: store an isolated upload and return `job_id` without queueing.
+  These standalone uploads do not have processing status. `/pipeline/` takes its own file.
+- Unknown or expired job/clip IDs return HTTP 404. The UI offers another upload
+  instead of polling an expired job forever.
+
+Submission errors use non-2xx statuses and a `detail` message: 400 invalid upload,
+413 size limit, 415 unsupported extension, 429 queue/upload capacity, 503 unavailable
+worker. Processing failures include `transcription_failed`, `no_highlights`,
+`invalid_video`, `processing_timeout`, `interrupted`, and `processing_failed`.
+The UI displays the stored error and enables another upload after a terminal state.
+`NEXT_PUBLIC_API_URL` overrides `http://localhost:8000`; set it before frontend build/start.
+
+## Restart and worker behavior
+
+Queue/status files are stored atomically in each job's directory (`job.json`).
+Queued uploads resume in creation order after a server restart. Jobs interrupted
+mid-processing become failed with an `interrupted` message, and partial media is
+removed. Completed results remain available until expiry. An unreadable status
+file is recovered as an explicit failure, not silently rerun. This supports normal
+process restarts; it is not a distributed queue or a power-loss backup system.
+
+Run **one backend process per DATA_DIR** (the Docker default). A storage-directory
+lock prevents a second worker from starting against the same directory. Graceful
+shutdown stops accepting jobs, leaves queued uploads for restart, and waits for the
+current bounded stage before failing the interrupted job. Forced termination is
+recovered on the next startup. Keep job storage on a local POSIX filesystem.
+No Redis, database server, or external queue service is required.
 
 ## Native installation and tests
 
@@ -138,7 +179,8 @@ npm run build
 ```
 
 Automated tests mock the model and media subprocesses. They test upload boundaries,
-job isolation, streamed request limits, active-job retention locks, downloads, cleanup, deterministic timing rules, CPU/offline settings,
+job isolation, streamed request limits, active-job retention locks, queue limits,
+persisted progress/results, restart recovery, downloads, cleanup, timing rules, CPU/offline settings,
 timeouts and responsiveness without network calls or model downloads. CI also
 builds the frontend and backend Docker image. Real local inference is tested
 separately with a short synthetic speech video.
@@ -157,8 +199,8 @@ This remains a local, single-user MVP. Docker binds both ports to loopback and C
 permits the local frontend origins. There is no user authentication or per-user
 clip authorization; UUID URLs are not an authorization system. Before public
 hosting, add authentication, private user storage, ingress body limits, quotas,
-and durable workers. Backend request limits and automatic retention are provided;
-also configure appropriate limits at a public ingress/reverse proxy.
+and deployment-specific worker supervision. A local persistent queue, backend request
+limits and automatic retention are provided; also configure appropriate limits at a public ingress/reverse proxy.
 Local inference avoids API charges but still consumes electricity, CPU and storage.
 
 Copyright © 2026 Freddie. All rights reserved.
