@@ -1,13 +1,13 @@
 import logging
+import os
 import shutil
 import subprocess
 from threading import BoundedSemaphore
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
 from services.whisper import transcribe_audio, LocalTranscriptionError
 from services.highlights import detect_highlights, InvalidHighlights
 from services.clipper import cut_clip, media_duration, extract_audio
-from services.storage import save_upload, get_clip
+from services.storage import save_upload, get_clip, finish_job, LeasedFileResponse
 
 router = APIRouter(prefix='/pipeline', tags=['pipeline'])
 # Local inference is CPU/memory intensive; allow one pipeline per backend process.
@@ -20,9 +20,10 @@ def process_video(file: UploadFile = File(...)):
     if not slots.acquire(blocking=False):
         raise HTTPException(429, 'Processing is busy. Try again shortly.')
     file_path = None
+    lease = None
     succeeded = False
     try:
-        job_id, file_path = save_upload(file)
+        job_id, file_path, lease = save_upload(file)
         duration = media_duration(file_path)
         audio_path = extract_audio(file_path)
         transcript = transcribe_audio(str(audio_path))
@@ -56,9 +57,17 @@ def process_video(file: UploadFile = File(...)):
                     file_path.unlink(missing_ok=True)
                     (file_path.parent / 'audio.mp3').unlink(missing_ok=True)
         finally:
-            slots.release()
+            try:
+                if lease is not None:
+                    if succeeded:
+                        finish_job(file_path.parent, lease)
+                    else:
+                        os.close(lease)
+            finally:
+                slots.release()
 
 
 @router.get('/{job_id}/clips/{filename}')
 def download_clip(job_id: str, filename: str):
-    return FileResponse(get_clip(job_id, filename), media_type='video/mp4', filename=filename)
+    path, lease = get_clip(job_id, filename)
+    return LeasedFileResponse(path, lease, media_type='video/mp4', filename=filename)

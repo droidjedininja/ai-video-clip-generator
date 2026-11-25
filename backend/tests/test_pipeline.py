@@ -87,7 +87,7 @@ def test_jobs_have_distinct_persistent_downloads(client, fake_processing):
     assert client.get(second['clips'][0]).content == b'clip:second'
     assert first['highlights'][0]['start'] == .5
     for job in (first, second):
-        assert sorted(p.name for p in (storage.DATA_DIR/job['job_id']).iterdir()) == ['clip_1.mp4']
+        assert sorted(p.name for p in (storage.DATA_DIR/job['job_id']).iterdir()) == ['.lock', 'clip_1.mp4']
 
 
 def test_download_rejects_invalid_ids_names_and_symlinks(client, tmp_path):
